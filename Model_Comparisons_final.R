@@ -2,6 +2,7 @@
 ##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 ##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 ## Porpoise bycatch mortality model selection with AIC ####
+## author: Gildas Glemarec (ggle@aqua.dtu.dk)
 ##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 ##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 ##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -496,3 +497,83 @@ modelTABLE <- model.sel(
 View(modelTABLE)  ##No AIC values, just AICc, no R-squared, and model name (i.e, a~b) not present
 # modelTABLE <- model.sel(modelTABLE, rank = AIC)
 write.csv2(modelTABLE, 'modelTABLE.csv')
+
+
+##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+## Examples of bias-corrected predictions ####
+##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+## Load glmmTMB incl. aggregate function
+# detach("package:glmmTMB", unload = TRUE)
+# library(glmmTMB, lib.loc = 'path to the branched version of glmmTMB')
+
+## Data.for.prediction is a dataset merging logbook/salesnotes data from Sweden 
+## and Denmark and aggregating the effort to ICES statistical square level
+
+#### 1. Aggregate by year #### 
+
+sumpred.y <- predict(bc.model,
+                     newdata=Data.for.prediction,
+                     allow.new.levels=TRUE,
+                     aggregate=factor(Data.for.prediction$y),
+                     se.fit=TRUE,
+                     do.bias.correct=TRUE,
+                     type="response")
+## CV = sd / mean (bias correct version), which is approx SD of log mean.
+sdlogpred <- sumpred.y[,4] / sumpred.y[,3]
+
+## Gather the results in a data frame:
+
+results.year = data.frame(year = levels(Data.for.prediction$y), 
+                                    est = sumpred.y[,3], 
+                                    cilow = exp( log(sumpred.y[,3]) - 2*sdlogpred), 
+                                    cihigh = exp( log( sumpred.y[,3]) + 2*sdlogpred))
+fwrite(results.year,
+       'results.year.bias.corr.csv',
+       sep = ';', dec = ',')
+
+#### 2. Aggregate by quarter/area ####
+## Mean (and 95% CI) quarterly fleet-wide harbour porpoise bycatch estimates 
+gc()
+sumpred.q <- lapply(split(Data.for.prediction,
+                          by = 'ices.area',
+                          flatten = TRUE),
+                    function(x){predict(bc.model,
+                                        newdata=x,
+                                        allow.new.levels=TRUE,
+                                        aggregate=factor(x$quarter),
+                                        se.fit=TRUE,
+                                        do.bias.correct=TRUE,
+                                        type="response")}
+)
+# ## There are 11 years of data aggregated here, so:
+sumpred.q <- lapply(sumpred.q,function(x){x / n_distinct(Data.for.prediction$y)}) 
+
+## CV = sd / mean (bias correct version), which is approx SD of log mean.
+rm(sdlogpred)
+sdlogpred <- lapply(sumpred.q,
+                    function(x){as.data.table(x[,4] / x[,3])})
+sumpred.q <- 
+  map2(sumpred.q, sdlogpred, ~cbind(.x, setNames(.y, names(.x))))
+
+results.quarter <- lapply(sumpred.q,
+                                    function(x){
+                                      data.frame(quarter = levels(Data.for.prediction$quarter), 
+                                                 est = x[,3], 
+                                                 cilow = exp( log(x[,3]) - 2*x[,5]), 
+                                                 cihigh = exp( log( x[,3]) + 2*x[,5]))
+                                    }
+) 
+results.quarter <- rbindlist(results.quarter, idcol = TRUE)
+setnames(results.quarter,
+         old = c('.id','Est...bias.correct.',
+                 'Est...bias.correct..1','Est...bias.correct..2'),
+         new = c('ices.area','est.bc',
+                 'lwr.bc','upr.bc'))
+
+fwrite(results.quarter,
+       'results.quarter.bias.corr.csv',
+       sep = ';', dec = ',')
